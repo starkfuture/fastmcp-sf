@@ -197,8 +197,14 @@ class AzureProvider(OAuthProxy):
         self.identifier_uri = identifier_uri or f"api://{client_id}"
         self.additional_authorize_scopes: list[str] = parsed_additional_scopes
 
-        # Always validate tokens against the app's API client ID using JWT
-        issuer = f"https://{base_authority}/{tenant_id}/v2.0"
+        # Always validate tokens against the app's API client ID using JWT.
+        # Accept both v2 and v1 issuers: Azure emits v1-format tokens (issuer
+        # https://sts.windows.net/{tid}/) when custom API scopes target a
+        # first-party Microsoft resource such as Dynamics 365 Business Central.
+        issuer: list[str] = [
+            f"https://{base_authority}/{tenant_id}/v2.0",
+            f"https://sts.windows.net/{tenant_id}/",
+        ]
         jwks_uri = f"https://{base_authority}/{tenant_id}/discovery/v2.0/keys"
 
         # Azure access tokens only include custom API scopes in the `scp` claim,
@@ -209,18 +215,28 @@ class AzureProvider(OAuthProxy):
             s for s in (parsed_required_scopes or []) if s not in OIDC_SCOPES
         ]
         if not validation_scopes:
-            raise ValueError(
-                "AzureProvider requires at least one non-OIDC scope in "
-                "required_scopes (e.g., 'read', 'write'). OIDC scopes like "
-                "'openid', 'profile', 'email', and 'offline_access' are not "
-                "included in Azure access token claims and cannot be used for "
-                "scope enforcement."
-            )
+            # When all requested scopes are OIDC scopes (or none were given),
+            # skip scope enforcement — the token is still validated by issuer
+            # and audience.  This is common when the only scope requested from
+            # Azure is `<resource>/.default` (e.g. for Dynamics 365 Business
+            # Central), which doesn't appear in the `scp` claim.
+            validation_scopes = None
+
+        # Accept multiple audience formats:
+        # - v2: bare client_id  (e.g. "72322666-…")
+        # - v1: api://client_id (e.g. "api://72322666-…")
+        # - custom identifier_uri (e.g. "https://api.businesscentral.dynamics.com")
+        # Azure v1 tokens use api://client_id or the identifier_uri as audience;
+        # v2 tokens use the bare client_id.  When identifier_uri differs from
+        # api://client_id all three must be accepted.
+        audience: list[str] = [client_id, f"api://{client_id}"]
+        if self.identifier_uri not in audience:
+            audience.append(self.identifier_uri)
 
         token_verifier = JWTVerifier(
             jwks_uri=jwks_uri,
             issuer=issuer,
-            audience=[client_id, self.identifier_uri],
+            audience=audience,
             algorithm="RS256",
             required_scopes=validation_scopes,  # Only validate non-OIDC scopes
             http_client=http_client,
@@ -618,16 +634,23 @@ class AzureJWTVerifier(JWTVerifier):
         # issuer, not the literal "organizations" or "consumers" string. Skip
         # issuer validation for these — audience still protects against wrong-app tokens.
         multi_tenant_values = {"organizations", "consumers", "common"}
-        issuer: str | None = (
+        issuer: list[str] | None = (
             None
             if tenant_id in multi_tenant_values
-            else f"https://{base_authority}/{tenant_id}/v2.0"
+            else [
+                f"https://{base_authority}/{tenant_id}/v2.0",
+                f"https://sts.windows.net/{tenant_id}/",
+            ]
         )
+
+        audience: list[str] = [client_id, f"api://{client_id}"]
+        if self._identifier_uri not in audience:
+            audience.append(self._identifier_uri)
 
         super().__init__(
             jwks_uri=f"https://{base_authority}/{tenant_id}/discovery/v2.0/keys",
             issuer=issuer,
-            audience=[client_id, self._identifier_uri],
+            audience=audience,
             algorithm="RS256",
             required_scopes=required_scopes,
         )

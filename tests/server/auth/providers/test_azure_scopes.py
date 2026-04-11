@@ -149,37 +149,37 @@ class TestOIDCScopeHandling:
         # Token validator should only require non-OIDC scopes
         assert provider._token_validator.required_scopes == ["read"]
 
-    def test_required_scopes_all_oidc_raises_value_error(
+    def test_required_scopes_all_oidc_skips_scope_enforcement(
         self, memory_storage: MemoryStore
     ):
-        """Test that providing only OIDC scopes raises ValueError."""
-        with pytest.raises(ValueError, match="at least one non-OIDC scope"):
-            AzureProvider(
-                client_id="test_client",
-                client_secret="test_secret",
-                tenant_id="test-tenant",
-                base_url="https://myserver.com",
-                identifier_uri="api://my-api",
-                required_scopes=["openid", "profile"],
-                jwt_signing_key="test-secret",
-                client_storage=memory_storage,
-            )
+        """Test that OIDC-only scopes are accepted (scope enforcement skipped)."""
+        provider = AzureProvider(
+            client_id="test_client",
+            client_secret="test_secret",
+            tenant_id="test-tenant",
+            base_url="https://myserver.com",
+            identifier_uri="api://my-api",
+            required_scopes=["openid", "profile"],
+            jwt_signing_key="test-secret",
+            client_storage=memory_storage,
+        )
+        assert not provider._token_validator.required_scopes
 
-    def test_empty_required_scopes_raises_value_error(
+    def test_empty_required_scopes_skips_scope_enforcement(
         self, memory_storage: MemoryStore
     ):
-        """Test that providing empty required_scopes raises ValueError."""
-        with pytest.raises(ValueError, match="at least one non-OIDC scope"):
-            AzureProvider(
-                client_id="test_client",
-                client_secret="test_secret",
-                tenant_id="test-tenant",
-                base_url="https://myserver.com",
-                identifier_uri="api://my-api",
-                required_scopes=[],
-                jwt_signing_key="test-secret",
-                client_storage=memory_storage,
-            )
+        """Test that empty required_scopes are accepted (scope enforcement skipped)."""
+        provider = AzureProvider(
+            client_id="test_client",
+            client_secret="test_secret",
+            tenant_id="test-tenant",
+            base_url="https://myserver.com",
+            identifier_uri="api://my-api",
+            required_scopes=[],
+            jwt_signing_key="test-secret",
+            client_storage=memory_storage,
+        )
+        assert not provider._token_validator.required_scopes
 
     @pytest.mark.parametrize(
         "scopes",
@@ -189,20 +189,20 @@ class TestOIDCScopeHandling:
             ["email"],
         ],
     )
-    def test_only_oidc_scopes_raises_value_error(
+    def test_only_oidc_scopes_skips_scope_enforcement(
         self, memory_storage: MemoryStore, scopes: list[str]
     ):
-        """Test that various OIDC-only scope combinations raise ValueError."""
-        with pytest.raises(ValueError, match="at least one non-OIDC scope"):
-            AzureProvider(
-                client_id="test_client",
-                client_secret="test_secret",
-                tenant_id="test-tenant",
-                base_url="https://myserver.com",
-                required_scopes=scopes,
-                jwt_signing_key="test-secret",
-                client_storage=memory_storage,
-            )
+        """Test that various OIDC-only scope combinations skip scope enforcement."""
+        provider = AzureProvider(
+            client_id="test_client",
+            client_secret="test_secret",
+            tenant_id="test-tenant",
+            base_url="https://myserver.com",
+            required_scopes=scopes,
+            jwt_signing_key="test-secret",
+            client_storage=memory_storage,
+        )
+        assert not provider._token_validator.required_scopes
 
     def test_valid_scopes_includes_oidc_scopes(self, memory_storage: MemoryStore):
         """Test that valid_scopes advertises OIDC scopes to clients."""
@@ -412,7 +412,10 @@ class TestAzureJWTVerifier:
             verifier.jwks_uri
             == "https://login.microsoftonline.com/my-tenant-id/discovery/v2.0/keys"
         )
-        assert verifier.issuer == "https://login.microsoftonline.com/my-tenant-id/v2.0"
+        assert verifier.issuer == [
+            "https://login.microsoftonline.com/my-tenant-id/v2.0",
+            "https://sts.windows.net/my-tenant-id/",
+        ]
         assert verifier.audience == ["my-client-id", "api://my-client-id"]
         assert verifier.algorithm == "RS256"
         assert verifier.required_scopes == ["access_as_user"]
@@ -481,6 +484,30 @@ class TestAzureJWTVerifier:
         assert result is not None
         assert "read" in result.scopes
 
+    async def test_validates_token_with_v1_issuer(self):
+        """Azure v1 tokens use sts.windows.net as issuer when custom API scopes
+        target a first-party Microsoft resource (e.g. Dynamics 365 Business Central).
+        Both v1 and v2 issuers must be accepted."""
+        key_pair = RSAKeyPair.generate()
+        verifier = AzureJWTVerifier(
+            client_id="my-client-id",
+            tenant_id="my-tenant-id",
+            required_scopes=["access_as_user"],
+        )
+        verifier.public_key = key_pair.public_key
+        verifier.jwks_uri = None
+
+        # v1 issuer — should be accepted
+        token = key_pair.create_token(
+            subject="test-user",
+            issuer="https://sts.windows.net/my-tenant-id/",
+            audience="api://my-client-id",
+            additional_claims={"scp": "access_as_user"},
+        )
+        result = await verifier.load_access_token(token)
+        assert result is not None
+        assert "access_as_user" in result.scopes
+
     async def test_rejects_token_with_wrong_audience(self):
         """Tokens for a different application must be rejected."""
         key_pair = RSAKeyPair.generate()
@@ -548,7 +575,10 @@ class TestAzureJWTVerifier:
             verifier.jwks_uri
             == "https://login.microsoftonline.us/my-tenant-id/discovery/v2.0/keys"
         )
-        assert verifier.issuer == "https://login.microsoftonline.us/my-tenant-id/v2.0"
+        assert verifier.issuer == [
+            "https://login.microsoftonline.us/my-tenant-id/v2.0",
+            "https://sts.windows.net/my-tenant-id/",
+        ]
 
     def test_scopes_supported_empty_when_no_required_scopes(self):
         verifier = AzureJWTVerifier(
@@ -591,10 +621,10 @@ class TestAzureJWTVerifier:
             client_id="my-client-id",
             tenant_id="12345678-1234-1234-1234-123456789012",
         )
-        assert (
-            verifier.issuer
-            == "https://login.microsoftonline.com/12345678-1234-1234-1234-123456789012/v2.0"
-        )
+        assert verifier.issuer == [
+            "https://login.microsoftonline.com/12345678-1234-1234-1234-123456789012/v2.0",
+            "https://sts.windows.net/12345678-1234-1234-1234-123456789012/",
+        ]
 
 
 class TestAzureOBOIntegration:

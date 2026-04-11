@@ -208,8 +208,11 @@ class TestAzureProvider:
         assert verifier.jwks_uri.startswith(
             "https://login.microsoftonline.com/my-tenant/discovery/v2.0/keys"
         )
-        assert verifier.issuer == "https://login.microsoftonline.com/my-tenant/v2.0"
-        assert verifier.audience == ["test_client", "api://my-api"]
+        assert verifier.issuer == [
+            "https://login.microsoftonline.com/my-tenant/v2.0",
+            "https://sts.windows.net/my-tenant/",
+        ]
+        assert verifier.audience == ["test_client", "api://test_client", "api://my-api"]
         # Scopes are stored unprefixed for token validation
         # (Azure returns unprefixed scopes like ".default" in JWT tokens)
         assert verifier.required_scopes == [".default"]
@@ -459,10 +462,10 @@ class TestAzureProvider:
             == "https://login.microsoftonline.com/test-tenant/oauth2/v2.0/token"
         )
         assert isinstance(provider._token_validator, JWTVerifier)
-        assert (
-            provider._token_validator.issuer
-            == "https://login.microsoftonline.com/test-tenant/v2.0"
-        )
+        assert provider._token_validator.issuer == [
+            "https://login.microsoftonline.com/test-tenant/v2.0",
+            "https://sts.windows.net/test-tenant/",
+        ]
         assert (
             provider._token_validator.jwks_uri
             == "https://login.microsoftonline.com/test-tenant/discovery/v2.0/keys"
@@ -490,10 +493,10 @@ class TestAzureProvider:
             == "https://login.microsoftonline.us/gov-tenant-id/oauth2/v2.0/token"
         )
         assert isinstance(provider._token_validator, JWTVerifier)
-        assert (
-            provider._token_validator.issuer
-            == "https://login.microsoftonline.us/gov-tenant-id/v2.0"
-        )
+        assert provider._token_validator.issuer == [
+            "https://login.microsoftonline.us/gov-tenant-id/v2.0",
+            "https://sts.windows.net/gov-tenant-id/",
+        ]
         assert (
             provider._token_validator.jwks_uri
             == "https://login.microsoftonline.us/gov-tenant-id/discovery/v2.0/keys"
@@ -521,10 +524,10 @@ class TestAzureProvider:
             == "https://login.microsoftonline.us/env-tenant-id/oauth2/v2.0/token"
         )
         assert isinstance(provider._token_validator, JWTVerifier)
-        assert (
-            provider._token_validator.issuer
-            == "https://login.microsoftonline.us/env-tenant-id/v2.0"
-        )
+        assert provider._token_validator.issuer == [
+            "https://login.microsoftonline.us/env-tenant-id/v2.0",
+            "https://sts.windows.net/env-tenant-id/",
+        ]
         assert (
             provider._token_validator.jwks_uri
             == "https://login.microsoftonline.us/env-tenant-id/discovery/v2.0/keys"
